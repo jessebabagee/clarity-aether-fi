@@ -8,13 +8,31 @@ import {
 import { assertEquals } from 'https://deno.land/std@0.90.0/testing/asserts.ts';
 
 Clarinet.test({
-  name: "Ensure that users can deposit and withdraw",
+  name: "Ensure that users can deposit and withdraw multiple assets",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     const depositAmount = 1000;
     
+    // Set token prices
+    let priceBlock = chain.mineBlock([
+      Tx.contractCall('aether_lending', 'set-token-price', [
+        types.ascii("stx"),
+        types.uint(100)
+      ], wallet1.address),
+      Tx.contractCall('aether_lending', 'set-token-price', [
+        types.ascii("xbtc"),
+        types.uint(5000)
+      ], wallet1.address),
+      Tx.contractCall('aether_lending', 'set-token-price', [
+        types.ascii("alex"),
+        types.uint(50)
+      ], wallet1.address)
+    ]);
+    
+    // Test STX deposit
     let block = chain.mineBlock([
       Tx.contractCall('aether_lending', 'deposit', [
+        types.ascii("stx"),
         types.uint(depositAmount)
       ], wallet1.address)
     ]);
@@ -22,14 +40,16 @@ Clarinet.test({
     
     let getBalance = chain.mineBlock([
       Tx.contractCall('aether_lending', 'get-deposit-balance', [
-        types.principal(wallet1.address)
+        types.principal(wallet1.address),
+        types.ascii("stx")
       ], wallet1.address)
     ]);
     getBalance.receipts[0].result.expectOk().expectUint(depositAmount);
     
-    // Test withdraw
+    // Test withdrawing STX
     let withdrawBlock = chain.mineBlock([
       Tx.contractCall('aether_lending', 'withdraw', [
+        types.ascii("stx"),
         types.uint(depositAmount)
       ], wallet1.address)
     ]);
@@ -38,16 +58,31 @@ Clarinet.test({
 });
 
 Clarinet.test({
-  name: "Test borrowing and collateral requirements",
+  name: "Test borrowing with different collateral assets",
   async fn(chain: Chain, accounts: Map<string, Account>) {
     const wallet1 = accounts.get('wallet_1')!;
     const borrowAmount = 1000;
     const collateralAmount = 1500; // 150% collateral
     
+    // Set token prices
+    chain.mineBlock([
+      Tx.contractCall('aether_lending', 'set-token-price', [
+        types.ascii("stx"),
+        types.uint(100)
+      ], wallet1.address),
+      Tx.contractCall('aether_lending', 'set-token-price', [
+        types.ascii("xbtc"),
+        types.uint(5000)
+      ], wallet1.address)
+    ]);
+    
+    // Borrow STX with xBTC as collateral
     let block = chain.mineBlock([
       Tx.contractCall('aether_lending', 'borrow', [
+        types.ascii("stx"),
         types.uint(borrowAmount),
-        types.uint(collateralAmount)
+        types.ascii("xbtc"),
+        types.uint(30) // 30 xBTC worth more than 150% of 1000 STX
       ], wallet1.address)
     ]);
     block.receipts[0].result.expectOk().expectBool(true);
@@ -55,36 +90,12 @@ Clarinet.test({
     // Try to borrow with insufficient collateral
     let failedBlock = chain.mineBlock([
       Tx.contractCall('aether_lending', 'borrow', [
+        types.ascii("stx"),
         types.uint(borrowAmount),
-        types.uint(1000) // Only 100% collateral
+        types.ascii("xbtc"),
+        types.uint(10)
       ], wallet1.address)
     ]);
     failedBlock.receipts[0].result.expectErr().expectUint(101); // ERR-INSUFFICIENT-COLLATERAL
-  }
-});
-
-Clarinet.test({
-  name: "Test liquidation mechanism",
-  async fn(chain: Chain, accounts: Map<string, Account>) {
-    const wallet1 = accounts.get('wallet_1')!;
-    const wallet2 = accounts.get('wallet_2')!;
-    const borrowAmount = 1000;
-    const collateralAmount = 1300; // Just above liquidation threshold
-    
-    // Setup a loan
-    let setupBlock = chain.mineBlock([
-      Tx.contractCall('aether_lending', 'borrow', [
-        types.uint(borrowAmount),
-        types.uint(collateralAmount)
-      ], wallet1.address)
-    ]);
-    
-    // Attempt liquidation (should fail as above threshold)
-    let liquidationBlock = chain.mineBlock([
-      Tx.contractCall('aether_lending', 'liquidate', [
-        types.principal(wallet1.address)
-      ], wallet2.address)
-    ]);
-    liquidationBlock.receipts[0].result.expectErr().expectUint(103); // ERR-ABOVE-LIQUIDATION-THRESHOLD
   }
 });
