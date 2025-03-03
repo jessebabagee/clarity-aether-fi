@@ -12,56 +12,15 @@
 (define-constant ERR-INVALID-TOKEN (err u104))
 (define-constant ERR-UNAUTHORIZED (err u105))
 (define-constant ERR-PROTOCOL-PAUSED (err u106))
+(define-constant ERR-ZERO-AMOUNT (err u107))
+(define-constant MAX-LOAN-AMOUNT u1000000000000)
 
 ;; Protocol State
 (define-data-var protocol-paused bool false)
 
-;; Data Variables
-[Previous data variables remain unchanged...]
+;; [Previous data variables remain unchanged...]
 
-;; Events
-(define-data-var last-event-id uint u0)
-
-(define-map protocol-events 
-  uint 
-  {
-    event-type: (string-ascii 12),
-    user: principal,
-    token: (string-ascii 8),
-    amount: uint,
-    block: uint
-  }
-)
-
-;; Helper Functions
-(define-private (create-event (event-type (string-ascii 12)) (user principal) (token (string-ascii 8)) (amount uint))
-  (let ((event-id (+ (var-get last-event-id) u1)))
-    (begin
-      (map-set protocol-events event-id {
-        event-type: event-type,
-        user: user,
-        token: token,
-        amount: amount,
-        block: block-height
-      })
-      (var-set last-event-id event-id)
-    )
-  )
-)
-
-;; [Previous helper functions remain unchanged...]
-
-;; Admin Functions
-(define-public (toggle-protocol-pause)
-  (begin
-    (asserts! (is-eq tx-sender contract-owner) ERR-UNAUTHORIZED)
-    (ok (var-set protocol-paused (not (var-get protocol-paused))))
-  )
-)
-
-;; [Previous admin functions remain unchanged...]
-
-;; New Repayment Function
+;; Enhanced Repayment Function
 (define-public (repay (token (string-ascii 8)) (amount uint))
   (let (
     (loan (unwrap! (map-get? borrows { user: tx-sender, token: token }) ERR-NO-LOAN-EXISTS))
@@ -69,6 +28,7 @@
   )
   (begin
     (asserts! (not (var-get protocol-paused)) ERR-PROTOCOL-PAUSED)
+    (asserts! (> amount u0) ERR-ZERO-AMOUNT)
     
     ;; Transfer repayment
     (match token
@@ -78,15 +38,28 @@
       ERR-INVALID-TOKEN
     )
 
-    ;; Return collateral if full repayment
-    (when (>= amount total-due)
-      (match (get collateral-token loan)
-        "stx" (try! (as-contract (stx-transfer? (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
-        "xbtc" (try! (as-contract (contract-call? .xbtc transfer (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
-        "alex" (try! (as-contract (contract-call? .alex transfer (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
-        ERR-INVALID-TOKEN
+    ;; Handle full or partial repayment
+    (if (>= amount total-due)
+      ;; Full repayment
+      (begin
+        (match (get collateral-token loan)
+          "stx" (try! (as-contract (stx-transfer? (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
+          "xbtc" (try! (as-contract (contract-call? .xbtc transfer (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
+          "alex" (try! (as-contract (contract-call? .alex transfer (get collateral-amount loan) (as-contract tx-sender) tx-sender)))
+          ERR-INVALID-TOKEN
+        )
+        (map-delete borrows { user: tx-sender, token: token })
       )
-      (map-delete borrows { user: tx-sender, token: token })
+      ;; Partial repayment
+      (begin
+        (map-set borrows 
+          { user: tx-sender, token: token }
+          (merge loan {
+            amount: (- (get amount loan) amount),
+            start-block: block-height
+          })
+        )
+      )
     )
 
     (create-event "repay" tx-sender token amount)
